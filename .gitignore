@@ -1,0 +1,30 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Lockfile — library does not commit uv.lock (apps do)
+uv.lock
+
+# Datasets / large binaries — never commit (MNIST, STL-10, etc.)
+data/
+
+# Pytest / coverage caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Experiment leftovers — never shipped
+.scratch/
+out/
+.data/
+
+# OS / editor noise
+.DS_Store
+.idea/

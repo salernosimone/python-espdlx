@@ -1,0 +1,42 @@
+[project]
+name = "espnnpy"
+version = "0.1.0"
+description = "esp-nn friendly NN blocks for ESP32-S3 (PyTorch backend). Deploy via ONNX -> esp-dl."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE*"]
+authors = [
+    { name = "Simone Salerno", email = "info@salernosimone.com" },
+]
+keywords = ["esp32", "esp-nn", "esp-dl", "pytorch", "onnx", "embedded", "tiny-ml"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "esp-ppq",
+    "numpy>=2.5.1",
+    "torch>=2.13.0",
+    "torchvision>=0.28.0",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["espnn*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
