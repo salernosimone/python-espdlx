@@ -19,10 +19,17 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "esp-ppq",
     "numpy>=2.5.1",
     "torch>=2.13.0",
     "torchvision>=0.28.0",
+]
+
+[project.optional-dependencies]
+convert = [
+    "esp-ppq",
+    "onnx>=1.14",
+    "onnxruntime>=1.19",
+    "onnxscript",
 ]
 
 [build-system]

@@ -10,6 +10,8 @@ esp-dl quantization (`espdl_quantize_onnx` -> `.espdl`).
 
 ```bash
 pip install espnnpy
+# with esp-dl quantization support:
+pip install "espnnpy[convert]"
 ```
 
 ## Example
@@ -62,6 +64,26 @@ with torch.no_grad():
         correct += (model(x.to(device)).argmax(-1) == y.to(device)).sum().item()
         total += len(y)
 print(f"test acc: {correct / total:.3f}")
+```
+
+## Deploy to ESP32-S3
+
+Quantize a trained model to `.espdl` (needs the `convert` extra):
+
+```python
+from torch.utils.data import DataLoader, TensorDataset
+from espnn.convert import convert
+
+calib_loader = DataLoader(TensorDataset(calib_images), batch_size=8)
+
+report = convert(
+    model.cpu(),              # any nn.Module; espnn.Model or plain torch
+    example_input,            # dummy input for torch.onnx.export
+    calib_loader,             # calibration batches
+    "model.espdl",            # also writes model.onnx + espdl_report.json
+    calib_steps=16,
+)
+print(report["espdl_bytes"], report["input_scale"], report["input_zero_point"])
 ```
 
 ## License

@@ -1,8 +1,7 @@
 """The `Model` container: an ordered stack of espnn layers.
 
-Deployment is via standard PyTorch export: ``torch.onnx.export(model, ...)``
-followed by esp-dl quantization (ESP-PPQ ``espdl_quantize_onnx`` -> ``.espdl``).
-See ``.scratch/scripts/flower_to_espdl.py`` (not shipped) for a full example.
+Deploy with :func:`espnn.convert.convert` (``torch.onnx.export`` ->
+ESP-PPQ ``espdl_quantize_onnx`` -> ``.espdl``).
 """
 
 from __future__ import annotations
