@@ -116,6 +116,39 @@ def test_export_onnx_mul_model_has_mul_node(tmp_path):
 
 
 @requires_onnx
+def test_export_onnx_tier1_ops_present(tmp_path):
+    model = espdlx.Model(
+        [
+            L.Conv2d(2, 2, 1),
+            L.LeakyReLU(),
+            L.Tanh(),
+            L.Swish(),
+            L.Elu(),
+            L.HardSigmoid(),
+            L.Clip(min_val=-1.0, max_val=1.0),
+            L.Neg(),
+            L.Exp(),
+            L.Log(),
+            L.Sqrt(),
+            L.Sub(constant=0.5),
+            L.Div(constant=2.0),
+        ],
+        name="tier1_unary",
+    )
+    model.eval()
+    path = export_onnx(model, torch.zeros(1, 2, 2, 2), tmp_path / "t.onnx")
+    m = _onnx.load(str(path))
+    _onnx.checker.check_model(m)
+    ops = {n.op_type for n in m.graph.node}
+    # Swish lowers to Sigmoid+Mul (no native SiLU at opset 13); HardSigmoid
+    # stays native. Log needs positive input at runtime — here shape-only.
+    for expected in ["LeakyRelu", "Tanh", "Sigmoid", "Mul", "Elu",
+                     "HardSigmoid", "Clip", "Neg", "Exp", "Log", "Sqrt",
+                     "Sub", "Div"]:
+        assert expected in ops, (expected, ops)
+
+
+@requires_onnx
 def test_convert_end_to_end_with_stub_quantizer(tmp_path, monkeypatch):
     ppq_api = pytest.importorskip("esp_ppq.api")
 

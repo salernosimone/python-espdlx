@@ -1,9 +1,10 @@
-"""Elementwise and structural blocks: Add, Mul, Mean, Flatten."""
+"""Elementwise and structural blocks: Add/Sub/Mul/Div, Neg/Exp/Log/Sqrt, Mean, Flatten."""
 
 from __future__ import annotations
 
-from torch import nn
+import torch
 import torch.nn.functional as F
+from torch import nn
 
 from .base import Layer
 
@@ -96,6 +97,123 @@ class Mul(Layer):
         return tuple(in_shape)
 
 
+class Sub(Layer):
+    """Elementwise subtraction: constant, skip connection, or two tensors.
+
+    Mirrors :class:`Add` (``x - c``, ``x - saved[i]``, ``forward(x, y)``).
+    Exports to ONNX ``Sub`` (runtime ``dl::Sub``).
+    """
+
+    def __init__(self, constant=None, input_index=None):
+        super().__init__()
+        if constant is not None and input_index is not None:
+            raise ValueError("espdlx.Sub: constant and input_index are exclusive")
+        self.constant = float(constant) if constant is not None else None
+        self.input_index = input_index
+
+    def forward(self, x, y=None):
+        if self.constant is not None:
+            return x - self.constant
+        if y is None:
+            raise ValueError(
+                "espdlx.Sub: binary sub needs two tensors — use Sub(constant=c), "
+                "Sub(input_index=i) inside espdlx.Model, or Sub()(x, y)"
+            )
+        return x - y
+
+    def validate_shapes(self, in_shape, other_shape=None):
+        if self.constant is not None:
+            return tuple(in_shape)
+        if other_shape is None:
+            raise ValueError("espdlx.Sub: need both shapes to validate a tensor sub")
+        if tuple(in_shape) != tuple(other_shape):
+            raise ValueError(
+                f"espdlx.Sub: tensor shapes must match (esp-dl Sub requirement), "
+                f"got {tuple(in_shape)} and {tuple(other_shape)}"
+            )
+        return tuple(in_shape)
+
+
+class Div(Layer):
+    """Elementwise division: constant, skip connection, or two tensors.
+
+    Mirrors :class:`Add` (``x / c``, ``x / saved[i]``, ``forward(x, y)``).
+    Exports to ONNX ``Div`` (runtime ``dl::Div``). A zero constant is rejected
+    at construction; near-zero tensor divisors are the caller's responsibility.
+    """
+
+    def __init__(self, constant=None, input_index=None):
+        super().__init__()
+        if constant is not None and input_index is not None:
+            raise ValueError("espdlx.Div: constant and input_index are exclusive")
+        if constant is not None and float(constant) == 0.0:
+            raise ValueError("espdlx.Div: constant must be non-zero")
+        self.constant = float(constant) if constant is not None else None
+        self.input_index = input_index
+
+    def forward(self, x, y=None):
+        if self.constant is not None:
+            return x / self.constant
+        if y is None:
+            raise ValueError(
+                "espdlx.Div: binary div needs two tensors — use Div(constant=c), "
+                "Div(input_index=i) inside espdlx.Model, or Div()(x, y)"
+            )
+        return x / y
+
+    def validate_shapes(self, in_shape, other_shape=None):
+        if self.constant is not None:
+            return tuple(in_shape)
+        if other_shape is None:
+            raise ValueError("espdlx.Div: need both shapes to validate a tensor div")
+        if tuple(in_shape) != tuple(other_shape):
+            raise ValueError(
+                f"espdlx.Div: tensor shapes must match (esp-dl Div requirement), "
+                f"got {tuple(in_shape)} and {tuple(other_shape)}"
+            )
+        return tuple(in_shape)
+
+
+class Neg(Layer):
+    """Negation (exports to ONNX ``Neg``, runtime ``dl::Neg``)."""
+
+    def forward(self, x):
+        return -x
+
+    def validate_shapes(self, in_shape):
+        return tuple(in_shape)
+
+
+class Exp(Layer):
+    """Elementwise exp (exports to ONNX ``Exp``, runtime ``dl::Exp``)."""
+
+    def forward(self, x):
+        return torch.exp(x)
+
+    def validate_shapes(self, in_shape):
+        return tuple(in_shape)
+
+
+class Log(Layer):
+    """Elementwise natural log (exports to ONNX ``Log``, runtime ``dl::Log``)."""
+
+    def forward(self, x):
+        return torch.log(x)
+
+    def validate_shapes(self, in_shape):
+        return tuple(in_shape)
+
+
+class Sqrt(Layer):
+    """Elementwise sqrt (exports to ONNX ``Sqrt``, runtime ``dl::Sqrt``)."""
+
+    def forward(self, x):
+        return torch.sqrt(x)
+
+    def validate_shapes(self, in_shape):
+        return tuple(in_shape)
+
+
 class Mean(Layer):
     """Spatial mean over H,W per channel (global average pooling)."""
 
@@ -119,4 +237,4 @@ class Flatten(Layer):
         return (n, total)
 
 
-__all__ = ["Add", "Mul", "Mean", "Flatten"]
+__all__ = ["Add", "Sub", "Mul", "Div", "Neg", "Exp", "Log", "Sqrt", "Mean", "Flatten"]

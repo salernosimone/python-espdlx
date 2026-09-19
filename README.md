@@ -21,15 +21,20 @@ plain PyTorch — the constraints are the point: if it trains here, it runs fast
 |---|---|
 | `Conv2d` | `groups=1`, `dilation=1`, symmetric (`SAME`) padding on odd kernels |
 | `DepthwiseConv2d` | `out_channels = in_channels × multiplier`, `dilation=1` |
-| `Linear` | `in_features` and `out_features` multiples of 8 |
+| `Linear` | any dims (the old esp-nn %8 rule is gone — `Linear(12, 5)` proven on-device) |
 | `MaxPool2d` / `AvgPool2d` | standard windows/strides |
 | `ReLU` / `ReLU6` / `HardSwish` / `Sigmoid` / `Softmax` | plain torch semantics (`ReLU6` rewrites to `Clip(0, 6)` at export) |
+| `LeakyReLU` / `Tanh` / `Swish` / `Elu` / `HardSigmoid` / `Clip` | device-proven (runtime `dl::LeakyRelu/Tanh/Swish/Elu/HardSigmoid/Clip`; `Swish` exports as `Sigmoid + Mul` at opset 13) |
 | `BatchNorm2d` | standard torch semantics, folds at quantization |
-| `Add` | constant (`Add(constant=c)`), skip connection (`Add(input_index=i)`), or binary (`Add()(x, y)`); same-shape tensors (esp-dl `Add` requirement) |
-| `Mul` | constant (`Mul(constant=c)`), skip connection (`Mul(input_index=i)`), or binary (`Mul()(x, y)`); same-shape tensors (esp-dl `Mul` requirement, verified on-device) |
+| `Add` / `Sub` | constant, skip connection (`input_index=i`), or binary (`Add()`/`Sub()(x, y)`); same-shape tensors |
+| `Mul` / `Div` | same three modes as `Add`/`Sub`; `Div` constant must be non-zero |
+| `Neg` / `Exp` / `Log` / `Sqrt` | elementwise unary (`Log`/`Sqrt` dequantize to F32 at quantization; feed positive inputs) |
 | `Mean` / `Flatten` | global average pool / row-major flatten |
 
 Violations fail fast at construction time (`ValueError`), not on the board.
+
+Full op coverage vs the esp-dl registry, proof status per op, and the Tier 2/3
+shortlist (`Concat`, `Resize`, transformers, RNNs): see `docs/OPS_ROADMAP.md`.
 
 ## Installation
 

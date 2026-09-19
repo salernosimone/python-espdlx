@@ -1,7 +1,8 @@
-"""Fully-connected block mirroring esp_nn_fully_connected_s8.
+"""Fully-connected block (exports to ONNX ``Gemm``, runtime ``dl::Gemm``).
 
-The ESP32-S3 FC kernel requires both the row length (input features) and the
-number of output channels to be multiples of 8.
+No multiple-of-8 restriction: ``Linear(12, 5)`` quantizes and runs on-device
+(verified 3/3 MATCH on ESP32-S3, maxabs ~0.003). The old esp-nn-era %8 rule
+is dropped — esp-dl handles arbitrary shapes.
 """
 
 from __future__ import annotations
@@ -16,15 +17,10 @@ class Linear(Layer):
         super().__init__()
         self.in_features = int(in_features)
         self.out_features = int(out_features)
-        if self.in_features % 8 != 0:
+        if self.in_features < 1 or self.out_features < 1:
             raise ValueError(
-                f"espdlx.Linear: in_features must be a multiple of 8 "
-                f"(ESP32-S3 SIMD limit), got {self.in_features}"
-            )
-        if self.out_features % 8 != 0:
-            raise ValueError(
-                f"espdlx.Linear: out_features must be a multiple of 8 "
-                f"(ESP32-S3 SIMD limit), got {self.out_features}"
+                f"espdlx.Linear: dims must be >= 1, got "
+                f"({self.in_features}, {self.out_features})"
             )
         self.fc = nn.Linear(self.in_features, self.out_features, bias=bias)
         self.weight = self.fc.weight

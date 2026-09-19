@@ -11,7 +11,9 @@ Usage:
     model = MobileNetV2.Base(num_classes=5)   # bigger flowers / transfer backbone
     model = MobileNetV2.Fomo()                # EXPERIMENTAL grayscale centroid detector, 96px
 
-`Linear` heads are padded to a multiple of 8 (ESP32-S3 SIMD limit). The true
+`Linear` heads are padded to a multiple of 8 (legacy headroom from the old
+esp-nn-era %8 rule — no longer required since esp-dl runs arbitrary shapes).
+The true
 class count is kept as `model.num_classes`; slice logits `[:, :num_classes]`
 when training/evaluating (see `benchmark_cifar20.py` arms in `.scratch`).
 """
