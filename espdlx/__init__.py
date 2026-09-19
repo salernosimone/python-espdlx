@@ -1,4 +1,4 @@
-"""espnnpy: esp-nn friendly NN blocks for ESP32-S3 (PyTorch backend)."""
+"""espdlx: esp-dl friendly NN blocks for ESP32-S3 (PyTorch backend)."""
 
 __version__ = "0.1.0"
 

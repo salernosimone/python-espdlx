@@ -47,12 +47,12 @@ class Conv2d(Layer):
         dilation = _pair(dilation, "dilation")
         if dilation != (1, 1):
             raise ValueError(
-                "espnn.Conv2d: dilation must be 1 (esp-nn SIMD limit), got {dilation!r}"
+                f"espdlx.Conv2d: dilation must be 1 (ESP32-S3 SIMD limit), got {dilation!r}"
             )
         if self.padding[0] > self.kernel[0] // 2 or self.padding[1] > self.kernel[1] // 2:
             raise ValueError(
-                "espnn.Conv2d: padding must keep a symmetric ('SAME') layout "
-                "for odd kernels (esp-nn leading-pad contract)"
+                "espdlx.Conv2d: padding must keep a symmetric ('SAME') layout "
+                "for odd kernels (ESP32-S3 leading-pad contract)"
             )
         self.conv = nn.Conv2d(
             self.in_channels,
@@ -71,7 +71,7 @@ class Conv2d(Layer):
         n, c, h, w = in_shape
         if c != self.in_channels:
             raise ValueError(
-                f"espnn.Conv2d: expected {self.in_channels} input channels, got {c}"
+                f"espdlx.Conv2d: expected {self.in_channels} input channels, got {c}"
             )
         out_h = _out_dim(h, self.kernel[0], self.stride[0], self.padding[0])
         out_w = _out_dim(w, self.kernel[1], self.stride[1], self.padding[1])
@@ -99,7 +99,7 @@ class DepthwiseConv2d(Layer):
         self.multiplier = int(multiplier)
         if self.out_channels != self.in_channels * self.multiplier:
             raise ValueError(
-                f"espnn.DepthwiseConv2d: out_channels must equal "
+                f"espdlx.DepthwiseConv2d: out_channels must equal "
                 f"in_channels * multiplier ({self.in_channels}x{self.multiplier}"
                 f"={self.in_channels * self.multiplier}), got {self.out_channels}"
             )
@@ -109,7 +109,7 @@ class DepthwiseConv2d(Layer):
         dilation = _pair(dilation, "dilation")
         if dilation != (1, 1):
             raise ValueError(
-                f"espnn.DepthwiseConv2d: dilation must be 1 (esp-nn SIMD limit)"
+                f"espdlx.DepthwiseConv2d: dilation must be 1 (ESP32-S3 SIMD limit)"
             )
         self.conv = nn.Conv2d(
             self.in_channels,
@@ -128,7 +128,7 @@ class DepthwiseConv2d(Layer):
         n, c, h, w = in_shape
         if c != self.in_channels:
             raise ValueError(
-                f"espnn.DepthwiseConv2d: expected {self.in_channels} input channels, "
+                f"espdlx.DepthwiseConv2d: expected {self.in_channels} input channels, "
                 f"got {c}"
             )
         out_h = _out_dim(h, self.kernel[0], self.stride[0], self.padding[0])
@@ -143,7 +143,7 @@ def _out_dim(in_dim: int, k: int, s: int, p: int) -> int:
     num = in_dim + 2 * p - k
     if num < 0:
         raise ValueError(
-            f"espnn layer: input {in_dim} with kernel {k}, padding {p} leaves no "
+            f"espdlx layer: input {in_dim} with kernel {k}, padding {p} leaves no "
             f"valid position"
         )
     return num // s + 1

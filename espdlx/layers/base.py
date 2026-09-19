@@ -1,4 +1,4 @@
-"""Shared base for espnn constrained blocks."""
+"""Shared base for espdlx constrained blocks."""
 
 from __future__ import annotations
 

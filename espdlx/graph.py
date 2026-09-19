@@ -1,6 +1,6 @@
-"""The `Model` container: an ordered stack of espnn layers.
+"""The `Model` container: an ordered stack of espdlx layers.
 
-Deploy with :func:`espnn.convert.convert` (``torch.onnx.export`` ->
+Deploy with :func:`espdlx.convert.convert` (``torch.onnx.export`` ->
 ESP-PPQ ``espdl_quantize_onnx`` -> ``.espdl``).
 """
 
@@ -17,7 +17,7 @@ class Model(nn.Module):
         for lyr in layers:
             if not isinstance(lyr, Layer):
                 raise TypeError(
-                    f"{type(lyr).__name__} is not an espnn layer; use espnn.layers"
+                    f"{type(lyr).__name__} is not an espdlx layer; use espdlx.layers"
                 )
         self.name = name
         self.layers = nn.ModuleList(layers)

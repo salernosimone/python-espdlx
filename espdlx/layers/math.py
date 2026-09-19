@@ -14,14 +14,14 @@ class Add(Layer):
     def __init__(self, constant=None, input_index=None):
         super().__init__()
         if constant is None and input_index is None:
-            raise ValueError("espnn.Add: provide a constant or input_index")
+            raise ValueError("espdlx.Add: provide a constant or input_index")
         self.constant = float(constant) if constant is not None else None
         self.input_index = input_index
 
     def forward(self, x):
         if self.constant is not None:
             return x + self.constant
-        raise NotImplementedError("espnn.Add requires a constant")
+        raise NotImplementedError("espdlx.Add requires a constant")
 
     def validate_shapes(self, in_shape):
         return in_shape
@@ -33,14 +33,14 @@ class Mul(Layer):
     def __init__(self, constant=None, input_index=None):
         super().__init__()
         if constant is None and input_index is None:
-            raise ValueError("espnn.Mul: provide a constant or input_index")
+            raise ValueError("espdlx.Mul: provide a constant or input_index")
         self.constant = float(constant) if constant is not None else None
         self.input_index = input_index
 
     def forward(self, x):
         if self.constant is not None:
             return x * self.constant
-        raise NotImplementedError("espnn.Mul requires a constant")
+        raise NotImplementedError("espdlx.Mul requires a constant")
 
     def validate_shapes(self, in_shape):
         return in_shape

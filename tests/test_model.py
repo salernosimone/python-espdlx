@@ -1,12 +1,12 @@
 import pytest
 import torch
 
-import espnn
-import espnn.layers as L
+import espdlx
+import espdlx.layers as L
 
 
 def _conv_mlp():
-    return espnn.Model(
+    return espdlx.Model(
         [
             L.Conv2d(1, 8, 3, padding=1),
             L.ReLU6(),
@@ -34,4 +34,4 @@ def test_validate_shapes():
 
 def test_model_rejects_non_layer():
     with pytest.raises(TypeError):
-        espnn.Model([L.Conv2d(1, 8, 3), torch.nn.Conv2d(8, 8, 3)])
+        espdlx.Model([L.Conv2d(1, 8, 3), torch.nn.Conv2d(8, 8, 3)])

@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-import espnn.layers as L
+import espdlx.layers as L
 
 
 def test_conv2d_forward_matches_torch():

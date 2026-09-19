@@ -1,4 +1,4 @@
-"""espnn constrained layer blocks (torch nn.Module wrappers)."""
+"""espdlx constrained layer blocks (torch nn.Module wrappers)."""
 
 from .activations import BatchNorm2d, HardSwish, ReLU, ReLU6, Sigmoid, Softmax
 from .base import Layer

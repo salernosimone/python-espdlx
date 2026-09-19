@@ -1,5 +1,5 @@
-def test_import_espnn():
-    import espnn
+def test_import_espdlx():
+    import espdlx
 
-    assert espnn.__version__
-    assert hasattr(espnn, "Model")
+    assert espdlx.__version__
+    assert hasattr(espdlx, "Model")

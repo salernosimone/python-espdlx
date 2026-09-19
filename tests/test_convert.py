@@ -6,13 +6,14 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-import espnn
-import espnn.layers as L
-from espnn.convert import (
+import espdlx
+import espdlx.layers as L
+from espdlx.convert import (
     _default_collate,
     convert,
     export_onnx,
     make_espdl_friendly,
+    write_header,
 )
 
 try:
@@ -24,7 +25,7 @@ requires_onnx = pytest.mark.skipif(_onnx is None, reason="needs 'convert' extra 
 
 
 def _tiny_model():
-    return espnn.Model(
+    return espdlx.Model(
         [
             L.Conv2d(1, 4, 1),
             L.ReLU(),
@@ -66,7 +67,7 @@ def test_make_espdl_friendly_rewrites_relu_min_and_reshape():
 
 
 @requires_onnx
-def test_export_onnx_espnn_model(tmp_path):
+def test_export_onnx_espdlx_model(tmp_path):
     model = _tiny_model()
     model.eval()
     path = export_onnx(model, torch.zeros(1, 1, 4, 4), tmp_path / "tiny.onnx")
@@ -102,20 +103,61 @@ def test_convert_end_to_end_with_stub_quantizer(tmp_path, monkeypatch):
     model = _tiny_model()
     calib = DataLoader(TensorDataset(torch.zeros(8, 1, 4, 4)), batch_size=4)
     report = convert(
-        model,
-        torch.zeros(1, 1, 4, 4),
-        calib,
-        tmp_path / "tiny.espdl",
-        report_path=None,
+        model=model,
+        example_input=torch.zeros(1, 1, 4, 4),
+        calib_loader=calib,
+        out_dir=tmp_path / "deploy",
+        calib_steps=16,
     )
     assert Path(report["onnx_path"]).exists()
     assert Path(report["espdl_path"]).exists()
+    assert Path(report["header_path"]).exists()
+    assert Path(report["report_path"]).exists()
+    assert report["name"] == "tiny"
+    assert report["header_var"] == "tiny_espdl"
     assert report["espdl_bytes"] == len(b"espdl-bytes")
     assert report["input_shape"] == [1, 1, 4, 4]
     assert report["input_scale"] == pytest.approx(0.5)
     assert report["input_zero_point"] == 3
     assert report["target"] == "esp32s3"
     assert report["quant_type"] == "w8a8"
+    header = Path(report["header_path"]).read_text()
+    assert "const unsigned char tiny_espdl[11]" in header
+    assert header.count("0x") == len(b"espdl-bytes")
+
+
+def test_write_header_roundtrips_bytes(tmp_path):
+    data = bytes(range(256))
+    path = write_header(data, tmp_path / "m.h", "m_espdl")
+    text = path.read_text()
+    assert text.startswith("#pragma once\n")
+    assert "const unsigned char m_espdl[256]" in text
+    assert "const unsigned int m_espdl_len = 256;" in text
+    assert text.count("0x") == 256
+    assert "0x00" in text and "0xff" in text
+
+
+def test_write_header_sanitizes_name_via_convert(tmp_path, monkeypatch):
+    ppq_api = pytest.importorskip("esp_ppq.api")
+
+    def stub_quantize(*, onnx_import_file, espdl_export_file, **kwargs):
+        Path(espdl_export_file).write_bytes(b"\x00")
+        return SimpleNamespace(inputs={})
+
+    monkeypatch.setattr(ppq_api, "espdl_quantize_onnx", stub_quantize)
+
+    model = _tiny_model()
+    calib = DataLoader(TensorDataset(torch.zeros(4, 1, 4, 4)), batch_size=4)
+    report = convert(
+        model=model,
+        example_input=torch.zeros(1, 1, 4, 4),
+        calib_loader=calib,
+        out_dir=tmp_path / "d",
+        name="my model!",
+    )
+    assert report["name"] == "my_model"
+    assert report["header_var"] == "my_model_espdl"
+    assert Path(report["header_path"]).name == "my_model.h"
 
 
 def test_default_collate_unwraps_singleton_batches():
