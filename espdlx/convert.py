@@ -35,6 +35,7 @@ __all__ = [
     "convert",
     "export_onnx",
     "make_espdl_friendly",
+    "fold_gemm_alpha_beta",
     "quantize_onnx",
     "write_header",
 ]
@@ -97,11 +98,323 @@ def export_onnx(
     return onnx_path
 
 
+def _get_attr(node, name, default=None):
+    """Read an ONNX node attribute (or ``default`` when absent)."""
+    onnx = _require_onnx()
+    for a in node.attribute:
+        if a.name == name:
+            return onnx.helper.get_attribute_value(a)
+    return default
+
+
+def _set_attr(node, name, value):
+    """Set an ONNX node attribute, replacing any existing one."""
+    onnx = _require_onnx()
+    for a in list(node.attribute):
+        if a.name == name:
+            node.attribute.remove(a)
+    node.attribute.append(onnx.helper.make_attribute(name, value))
+
+
+def _add_scaled_initializer(model, onnx, base_name: str, value, factor: float) -> str:
+    """Append ``alpha * value`` as a fresh initializer; returns its name."""
+    import numpy as _np
+
+    scaled = (factor * value).astype(value.dtype)
+    name = f"{base_name}_gemm_{factor}"
+    if any(i.name == name for i in model.graph.initializer):
+        name = f"{name}_{len(model.graph.initializer)}"
+    model.graph.initializer.append(
+        onnx.numpy_helper.from_array(_np.asarray(scaled), name)
+    )
+    return name
+
+
+def fold_gemm_alpha_beta(model) -> None:
+    """Fold ONNX ``Gemm`` alpha/beta attributes into its weight/bias inputs.
+
+    ESP-PPQ asserts ``alpha == beta == 1.0`` when exporting ``dl::Gemm``, so
+    non-trivial scales must be baked into the parameters: ``alpha * (A·B) +
+    beta * C`` == ``A · (alpha*B) + (beta*C)`` in float.
+
+    Handles ``B`` given directly as an initializer (``transB=0`` from
+    ``torch.addmm``) or as a ``Transpose`` / ``Constant`` of one (``transB=1``
+    with non-plain scales). Unsupported shapes raise ``ValueError``.
+    Mutates ``model`` in place.
+    """
+    onnx = _require_onnx()
+    inits = {i.name: onnx.numpy_helper.to_array(i) for i in model.graph.initializer}
+    by_out: dict = {}
+    for n in model.graph.node:
+        for o in n.output:
+            by_out.setdefault(o, []).append(n)
+    consumed: dict = {}
+    for n in model.graph.node:
+        for i in n.input:
+            consumed.setdefault(i, []).append(n)
+
+    dropped = set()  # ids of producer nodes redirected away from
+    for node in model.graph.node:
+        if node.op_type != "Gemm":
+            continue
+        alpha = float(_get_attr(node, "alpha", 1.0))
+        beta = float(_get_attr(node, "beta", 1.0))
+        if alpha == 1.0 and beta == 1.0:
+            continue
+
+        if alpha != 1.0:
+            b_name = node.input[1]
+            producer = (by_out.get(b_name) or [None])[0]
+            if b_name in inits:
+                node.input[1] = _add_scaled_initializer(
+                    model, onnx, b_name, inits[b_name], alpha
+                )
+            elif producer is not None and producer.op_type == "Transpose" and producer.input[0] in inits:
+                val = inits[producer.input[0]]
+                perm = _get_attr(producer, "perm", None)
+                if perm is not None:
+                    val = val.transpose(tuple(perm))
+                else:
+                    val = val.transpose()
+                node.input[1] = _add_scaled_initializer(
+                    model, onnx, producer.input[0], val, alpha
+                )
+                if len(consumed.get(b_name, [])) == 1:
+                    dropped.add(id(producer))
+            elif producer is not None and producer.op_type == "Constant":
+                val = onnx.numpy_helper.to_array(_get_attr(producer, "value"))
+                node.input[1] = _add_scaled_initializer(
+                    model, onnx, producer.output[0], val, alpha
+                )
+                if len(consumed.get(b_name, [])) == 1:
+                    dropped.add(id(producer))
+            else:
+                raise ValueError(
+                    "espdlx.convert: cannot fold Gemm alpha — input B is neither "
+                    "an initializer nor a Transpose/Constant of one (got "
+                    f"{b_name!r} produced by "
+                    f"{producer.op_type if producer is not None else 'nothing'})"
+                )
+
+        if beta != 1.0 and len(node.input) > 2 and node.input[2]:
+            c_name = node.input[2]
+            if c_name in inits:
+                node.input[2] = _add_scaled_initializer(
+                    model, onnx, c_name, inits[c_name], beta
+                )
+            else:
+                raise ValueError(
+                    "espdlx.convert: cannot fold Gemm beta — input C is not an "
+                    f"initializer (got {c_name!r})"
+                )
+
+        _set_attr(node, "alpha", 1.0)
+        _set_attr(node, "beta", 1.0)
+
+    if dropped:
+        kept = []
+        for n in model.graph.node:
+            if id(n) in dropped:
+                continue
+            kept.append(n)
+        del model.graph.node[:]
+        model.graph.node.extend(kept)
+
+
+def _copy_proto(model, onnx):
+    """Deep-copy an ``onnx.ModelProto`` without mutating the original."""
+    clone = onnx.ModelProto()
+    clone.ParseFromString(model.SerializeToString())
+    return clone
+
+
+def _is_flatten_reshape(node, by_out: dict, inits: dict, shapes: dict) -> bool:
+    """Whether a ``Reshape`` node only flattens (``axis=1`` equivalent).
+
+    True when the static target resolves (``0`` copies the input dim,
+    ``-1`` infers) to ``(N, prod_rest)`` with the batch dim untouched —
+    that is exactly ``Flatten(axis=1)``. Anything else (unknown shapes,
+    non-constant shape input, genuine rank juggling) returns False and the
+    node is preserved for ``dl::Reshape``.
+    """
+    if len(node.input) < 2:
+        return False
+    data, shape_in = node.input[0], node.input[1]
+    in_shape = shapes.get(data)
+    if not in_shape or len(in_shape) < 2:
+        return False
+    target = None
+    if shape_in in inits:
+        target = [int(v) for v in inits[shape_in].flatten().tolist()]
+    else:
+        producer = by_out.get(shape_in)
+        if producer is not None and producer.op_type == "Constant":
+            for a in producer.attribute:
+                if a.name == "value":
+                    onnx = _require_onnx()
+                    target = [
+                        int(v)
+                        for v in onnx.numpy_helper.to_array(
+                            onnx.helper.get_attribute_value(a)
+                        )
+                        .flatten()
+                        .tolist()
+                    ]
+    if not target:
+        return False
+    if target.count(-1) > 1 or any(d < -1 for d in target):
+        return False
+    resolved = []
+    for i, d in enumerate(target):
+        if d == 0:
+            if i >= len(in_shape):
+                return False
+            resolved.append(in_shape[i])
+        else:
+            resolved.append(d)
+    total = 1
+    for d in in_shape:
+        total *= d
+    if -1 in resolved:
+        known = 1
+        for d in resolved:
+            if d != -1:
+                known *= d
+        if known == 0 or total % known != 0:
+            return False
+        resolved[resolved.index(-1)] = total // known
+    else:
+        prod = 1
+        for d in resolved:
+            prod *= d
+        if prod != total:
+            return False
+    if len(resolved) != 2 or resolved[0] != in_shape[0]:
+        return False
+    rest = 1
+    for d in in_shape[1:]:
+        rest *= d
+    return resolved[1] == rest
+
+
+def _unbake_reshape_batch(model, full_shapes: dict) -> None:
+    """Restore a leading ``-1`` the exporter folded to the static batch.
+
+    ``Reshape`` targets are batch-agnostic by construction (see
+    :class:`espdlx.layers.Reshape`: per-sample shape, leading ``-1``), but
+    the torch exporter constant-folds that ``-1`` to the example batch
+    (observed when the reshape input comes from a ``Transpose``) — which
+    then breaks calibration at any other batch size. When the static shape
+    input ``[s0, ...]`` has ``s0`` equal to the statically-known input
+    batch, put the ``-1`` back: identical at batch-1, correct everywhere
+    else. Shared shape initializers are duplicated before mutation.
+    Untouched otherwise. Mutates ``model`` in place.
+    """
+    onnx = _require_onnx()
+    import numpy as _np
+
+    uses: dict = {}
+    for n in model.graph.node:
+        for i in n.input:
+            uses[i] = uses.get(i, 0) + 1
+    for node in model.graph.node:
+        if node.op_type != "Reshape" or len(node.input) < 2:
+            continue
+        data, shape_in = node.input[0], node.input[1]
+        in_shape = full_shapes.get(data)
+        if not in_shape:
+            continue
+        target_init = None
+        for init in model.graph.initializer:
+            if init.name == shape_in:
+                target_init = init
+                break
+        if target_init is None:
+            continue  # Constant-producer shapes are already dynamic-safe here
+        target = _np.asarray(onnx.numpy_helper.to_array(target_init)).flatten()
+        if len(target) < 2 or int(target[0]) != in_shape[0]:
+            continue  # -1/0 batch already, or genuinely batch-coupled
+        if uses.get(shape_in, 0) > 1:
+            clone_name = f"{shape_in}_unbaked"
+            if not any(i.name == clone_name for i in model.graph.initializer):
+                model.graph.initializer.append(
+                    onnx.numpy_helper.from_array(
+                        _np.asarray(target).astype(_np.int64), clone_name
+                    )
+                )
+            node.input[1] = clone_name
+            target_init = next(
+                i for i in model.graph.initializer if i.name == clone_name
+            )
+            target = _np.asarray(onnx.numpy_helper.to_array(target_init)).flatten()
+        patched = _np.asarray(target).astype(_np.int64)
+        patched[0] = -1
+        target_init.CopyFrom(
+            onnx.numpy_helper.from_array(patched, target_init.name)
+        )
+
+
+def _normalize_resize_sizes(model) -> None:
+    """Rewrite ``Resize`` nodes that carry a ``sizes`` input to ``scales``.
+
+    ESP-PPQ's calibration executor mishandles 4-input ``Resize`` (its
+    ``Resize_forward`` expects ``values`` to line up as x/scales/... and fails
+    on sizes-only nodes), while 3-input x/roi/scales is proven end-to-end.
+    Replacing ``sizes`` by ``sizes / input_shape`` is exact: the output pixels
+    are integers, so ``floor(in * sizes/in) == sizes`` for every axis.
+
+    Needs static input shape (via ONNX shape inference); untouched otherwise.
+    """
+    onnx = _require_onnx()
+    import numpy as np
+
+    inferred = onnx.shape_inference.infer_shapes(_copy_proto(model, onnx))
+    shapes: dict = {}
+    for vi in list(inferred.graph.value_info) + list(inferred.graph.input):
+        dims = [d.dim_value for d in vi.type.tensor_type.shape.dim]
+        if all(d > 0 for d in dims):
+            shapes[vi.name] = dims
+    inits = {i.name: onnx.numpy_helper.to_array(i) for i in model.graph.initializer}
+    for node in model.graph.node:
+        if node.op_type != "Resize":
+            continue
+        if len(node.input) < 4 or not node.input[3]:
+            continue  # scales-based (3 inputs) or no sizes at all
+        in_name = node.input[0]
+        sizes_name = node.input[3]
+        if in_name not in shapes or sizes_name not in inits:
+            continue
+        sizes = np.asarray(inits[sizes_name], dtype=np.float32)
+        in_shape = np.asarray(shapes[in_name], dtype=np.float32)
+        if len(sizes) != len(in_shape):
+            continue
+        scales = sizes / in_shape
+        name = f"{sizes_name}_scales"
+        if not any(i.name == name for i in model.graph.initializer):
+            model.graph.initializer.append(
+                onnx.numpy_helper.from_array(scales.astype(np.float32), name)
+            )
+        node.input[2] = name
+        del node.input[3]  # drop the sizes slot (scales is authoritative now)
+
+
 def make_espdl_friendly(model: Any) -> Any:
     """Rewrite ONNX exporter artifacts to ops esp-dl supports, in place.
 
     - ``Relu + Min(6)`` -> ``Clip(0, 6)`` (esp-dl has Clip, no Min)
-    - ``Reshape`` (static) -> ``Flatten`` (old ppq executor chokes on Reshape)
+    - ``Reshape`` -> ``Flatten`` but ONLY when flatten-equivalent
+      (``(N, prod_rest)``); genuine reshapes (attention head split/merge)
+      are preserved — the runtime has ``dl::Reshape``
+    - ``Gemm`` alpha/beta -> folded into weight/bias initializers
+      (ESP-PPQ asserts plain ``alpha == beta == 1``)
+    - ``RMSNorm`` composite (``Pow``/``ReduceMean``/``Add``/``Sqrt``/``Div``/
+      ``Mul``) is left as standard ONNX — ESP-PPQ's importer fuses it into a
+      native ``RMSNormalization`` (``FORMATTER_FUSE_RMSNORM``) at quantization
+    - ``Reshape`` leading dim folded to the static batch (exporter artifact
+      when the input comes from a ``Transpose``) is restored to ``-1`` —
+      identical at batch-1, correct at calibration batch-N
+    - ``Resize`` ``sizes`` -> ``scales`` (ESP-PPQ's executor only runs
+      scales-based Resize)
 
     Takes and returns the ``onnx.ModelProto``. Runs ``onnx.checker`` first
     (import) and last (result) so failures surface here, not in quantization.
@@ -132,6 +445,23 @@ def make_espdl_friendly(model: Any) -> Any:
     for n in model.graph.node:
         for o in n.output:
             by_out[o] = n
+    inits = {i.name: onnx.numpy_helper.to_array(i) for i in model.graph.initializer}
+    # Static input shapes for the Reshape-keep decision (best effort).
+    try:
+        inferred = onnx.shape_inference.infer_shapes(_copy_proto(model, onnx))
+        full_shapes: dict = {}
+        for vi in (
+            list(inferred.graph.input)
+            + list(inferred.graph.value_info)
+            + list(inferred.graph.output)
+        ):
+            dims = [d.dim_value for d in vi.type.tensor_type.shape.dim]
+            if all(d > 0 for d in dims):
+                full_shapes[vi.name] = dims
+    except Exception:
+        full_shapes = {}
+    _unbake_reshape_batch(model, full_shapes)
+    inits = {i.name: onnx.numpy_helper.to_array(i) for i in model.graph.initializer}
     relu_outs = set()
     for n in model.graph.node:
         if n.op_type == "Min" and six_name in n.input:
@@ -158,18 +488,24 @@ def make_espdl_friendly(model: Any) -> Any:
                 )
                 continue
         if n.op_type == "Reshape":
-            flat = onnx.helper.make_node(
-                "Flatten",
-                inputs=[n.input[0]],
-                outputs=[n.output[0]],
-                name=(n.name + "_flat") if n.name else "",
-            )
-            flat.attribute.append(onnx.helper.make_attribute("axis", 1))
-            new_nodes.append(flat)
+            if _is_flatten_reshape(n, by_out, inits, full_shapes):
+                flat = onnx.helper.make_node(
+                    "Flatten",
+                    inputs=[n.input[0]],
+                    outputs=[n.output[0]],
+                    name=(n.name + "_flat") if n.name else "",
+                )
+                flat.attribute.append(onnx.helper.make_attribute("axis", 1))
+                new_nodes.append(flat)
+                continue
+            new_nodes.append(n)  # genuine reshape (head split/merge) — keep
             continue
         new_nodes.append(n)
     del model.graph.node[:]
     model.graph.node.extend(new_nodes)
+
+    fold_gemm_alpha_beta(model)
+    _normalize_resize_sizes(model)
 
     used = {i for n in model.graph.node for i in n.input}
     for i in list(model.graph.initializer):

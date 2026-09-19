@@ -1,4 +1,4 @@
-"""Elementwise and structural blocks: Add/Sub/Mul/Div, Neg/Exp/Log/Sqrt, Mean, Flatten."""
+"""Elementwise and structural blocks: Add/Sub/Mul/Div, Neg/Exp/Log/Sqrt, Mean, Flatten, Concat."""
 
 from __future__ import annotations
 
@@ -237,4 +237,74 @@ class Flatten(Layer):
         return (n, total)
 
 
-__all__ = ["Add", "Sub", "Mul", "Div", "Neg", "Exp", "Log", "Sqrt", "Mean", "Flatten"]
+class Concat(Layer):
+    """Concatenate tensors along ``dim`` (exports to ONNX ``Concat``).
+
+    - ``Concat(input_indices=[i, j, ...], dim=1)`` inside an
+      :class:`espdlx.Model`: concat the *saved outputs* of layers ``i``,
+      ``j``, ... in exactly that order — this is the dense-block / FPN
+      primitive. ``saved`` holds each layer's output (the raw model input is
+      NOT included — reference the layer that produced the block-input). The
+      current stream is NOT implicit, which gives full control of membership
+      and ordering.
+    - ``Concat(dim=1)``: ``forward(x, y, ...)`` -> ``cat([x, y, ...])`` for
+      manual wiring.
+
+    All inputs must match on every non-axis dimension (esp-dl ``Concat``
+    requirement). ``dim`` uses Python indexing (negatives count from the
+    last axis).
+    """
+
+    def __init__(self, input_indices=None, dim: int = 1):
+        super().__init__()
+        if input_indices is not None:
+            if isinstance(input_indices, int):
+                input_indices = [input_indices]
+            input_indices = [int(i) for i in input_indices]
+            if not input_indices:
+                raise ValueError("espdlx.Concat: input_indices must not be empty")
+        self.input_indices = input_indices
+        self.dim = int(dim)
+
+    def forward(self, *xs):
+        if len(xs) < 2:
+            raise ValueError(
+                "espdlx.Concat: needs >= 2 tensors — use Concat(input_indices=[...]) "
+                "inside espdlx.Model, or Concat()(x, y, ...)"
+            )
+        return torch.cat(xs, dim=self.dim)
+
+    def validate_shapes(self, *shapes) -> tuple:
+        shapes = [tuple(s) for s in shapes]
+        if len(shapes) < 2:
+            raise ValueError(
+                "espdlx.Concat: need >= 2 shapes to validate a tensor concat"
+            )
+        rank = len(shapes[0])
+        dim = self.dim
+        if dim < 0:
+            dim += rank
+        if dim < 0 or dim >= rank:
+            raise ValueError(
+                f"espdlx.Concat: dim={self.dim} out of range for rank {rank}"
+            )
+        out = list(shapes[0])
+        for other in shapes[1:]:
+            if len(other) != rank:
+                raise ValueError(
+                    f"espdlx.Concat: all inputs must have the same rank, got "
+                    f"{shapes[0]} and {other}"
+                )
+            for j in range(rank):
+                if j == dim:
+                    continue
+                if other[j] != shapes[0][j]:
+                    raise ValueError(
+                        f"espdlx.Concat: non-axis dims must match (esp-dl Concat "
+                        f"requirement), got {shapes[0]} and {other} on dim {j}"
+                    )
+            out[dim] += other[dim]
+        return tuple(out)
+
+
+__all__ = ["Add", "Sub", "Mul", "Div", "Neg", "Exp", "Log", "Sqrt", "Mean", "Flatten", "Concat"]

@@ -22,6 +22,9 @@ plain PyTorch — the constraints are the point: if it trains here, it runs fast
 | `Conv2d` | `groups=1`, `dilation=1`, symmetric (`SAME`) padding on odd kernels |
 | `DepthwiseConv2d` | `out_channels = in_channels × multiplier`, `dilation=1` |
 | `Linear` | any dims (the old esp-nn %8 rule is gone — `Linear(12, 5)` proven on-device) |
+| `Gemm` | ONNX semantics `alpha·A·B + beta·C`, `transB`, `transA` rejected; non-plain `alpha`/`beta` fold into weights at export |
+| `Concat` | multi-input in `Model` via `input_indices=[...]` + `dim`; same non-axis dims required (dense blocks / FPN fusions) |
+| `Resize` | nearest / bilinear / bicubic (`scale_factor` or `size`); the sanctioned upsample path (no `ConvTranspose` in the registry) |
 | `MaxPool2d` / `AvgPool2d` | standard windows/strides |
 | `ReLU` / `ReLU6` / `HardSwish` / `Sigmoid` / `Softmax` | plain torch semantics (`ReLU6` rewrites to `Clip(0, 6)` at export) |
 | `LeakyReLU` / `Tanh` / `Swish` / `Elu` / `HardSigmoid` / `Clip` | device-proven (runtime `dl::LeakyRelu/Tanh/Swish/Elu/HardSigmoid/Clip`; `Swish` exports as `Sigmoid + Mul` at opset 13) |
@@ -30,11 +33,17 @@ plain PyTorch — the constraints are the point: if it trains here, it runs fast
 | `Mul` / `Div` | same three modes as `Add`/`Sub`; `Div` constant must be non-zero |
 | `Neg` / `Exp` / `Log` / `Sqrt` | elementwise unary (`Log`/`Sqrt` dequantize to F32 at quantization; feed positive inputs) |
 | `Mean` / `Flatten` | global average pool / row-major flatten |
+| `MatMul` | binary, skip (`input_index=i`), or saved pair (`input_indices=[i, j]`) — `Q @ K^T`, `weights @ V`; rank ≥ 2, compose transposes via `Transpose` |
+| `LayerNorm` / `RMSNorm` | feature-axis norms; `LayerNormalization` native, `RMSNorm` composite fuses at quantization (Tier-3 models export at opset 18) |
+| `Transpose` / `Reshape` / `Squeeze` / `Unsqueeze` | full-perm transpose; per-sample reshape (batch-agnostic `-1`); size-1 drop/insert |
+| `Slice` / `Gather` / `Pad` | static windows (ONNX clamp); frozen-index select; constant pad — use `Slice` (not `Split`) inside `Model` |
+| `Split` | manual wiring only (tuple output); exports native `Split` at opset 18 |
 
 Violations fail fast at construction time (`ValueError`), not on the board.
 
-Full op coverage vs the esp-dl registry, proof status per op, and the Tier 2/3
-shortlist (`Concat`, `Resize`, transformers, RNNs): see `docs/OPS_ROADMAP.md`.
+Full op coverage vs the esp-dl registry and proof status per op (Tier 3:
+transformer path + shape ops device-proven (chain level, trained-like magnitudes); RNNs deferred):
+see `docs/OPS_ROADMAP.md`.
 
 ## Installation
 
