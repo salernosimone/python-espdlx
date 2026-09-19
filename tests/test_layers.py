@@ -96,6 +96,32 @@ def test_flatten_mean_add_mul():
     assert torch.allclose(L.Mul(constant=2.0)(x), x * 2.0)
 
 
+def test_mul_binary_tensors():
+    torch.manual_seed(0)
+    x, y = torch.randn(1, 3, 4, 4), torch.randn(1, 3, 4, 4)
+    assert torch.allclose(L.Mul()(x, y), x * y)
+    assert L.Mul().validate_shapes((1, 3, 4, 4), (1, 3, 4, 4)) == (1, 3, 4, 4)
+    with pytest.raises(ValueError, match="two tensors"):
+        L.Mul()(x)
+    with pytest.raises(ValueError, match="must match"):
+        L.Mul().validate_shapes((1, 3, 4, 4), (1, 3, 2, 2))
+    with pytest.raises(ValueError, match="exclusive"):
+        L.Mul(constant=2.0, input_index=0)
+
+
+def test_add_binary_tensors():
+    torch.manual_seed(0)
+    x, y = torch.randn(1, 3, 4, 4), torch.randn(1, 3, 4, 4)
+    assert torch.allclose(L.Add()(x, y), x + y)
+    assert L.Add().validate_shapes((1, 3, 4, 4), (1, 3, 4, 4)) == (1, 3, 4, 4)
+    with pytest.raises(ValueError, match="two tensors"):
+        L.Add()(x)
+    with pytest.raises(ValueError, match="must match"):
+        L.Add().validate_shapes((1, 3, 4, 4), (1, 3, 2, 2))
+    with pytest.raises(ValueError, match="exclusive"):
+        L.Add(constant=1.0, input_index=0)
+
+
 def test_layers_are_nn_modules():
     for layer in [
         L.Conv2d(3, 16, 3),

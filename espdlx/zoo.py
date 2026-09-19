@@ -1,7 +1,8 @@
 """Prebuilt espdlx architectures (the `.scratch` zoo, cleaned up).
 
-All are residual-free variants of well-known families (espdlx has no runtime
-tensor-tensor `Add`, so skip connections are omitted). Bottlenecks keep the
+All are residual-free variants of well-known families (a latency choice, not a
+limitation — skip connections work via `espdlx.layers.Add(input_index=i)`).
+Bottlenecks keep the
 `1x1 expand -> 3x3 depthwise -> 1x1 project` shape with `ReLU6`.
 
 Usage:
@@ -68,7 +69,7 @@ def _btn(cin: int, cmid: int, cout: int, s: int = 1) -> list:
 
 
 class MobileNetV2:
-    """Inverted-residual family, residual-free (`ReLU6`, no `Add`)."""
+    """Inverted-residual family, residual-free by design (`ReLU6`, no `Add`)."""
 
     SPECS_SLIM = [(16, 24, 16, 1), (16, 32, 24, 2), (24, 40, 24, 1), (24, 48, 32, 2), (32, 64, 32, 1)]
     SPECS_BASE = [(32, 96, 32, 1), (32, 128, 48, 2), (48, 160, 48, 1), (48, 192, 64, 2), (64, 224, 64, 1), (64, 256, 80, 2)]

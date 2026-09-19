@@ -25,7 +25,8 @@ plain PyTorch — the constraints are the point: if it trains here, it runs fast
 | `MaxPool2d` / `AvgPool2d` | standard windows/strides |
 | `ReLU` / `ReLU6` / `HardSwish` / `Sigmoid` / `Softmax` | plain torch semantics (`ReLU6` rewrites to `Clip(0, 6)` at export) |
 | `BatchNorm2d` | standard torch semantics, folds at quantization |
-| `Add` / `Mul` | constant-only (no runtime tensor-tensor `Add` on-device — so no skip connections) |
+| `Add` | constant (`Add(constant=c)`), skip connection (`Add(input_index=i)`), or binary (`Add()(x, y)`); same-shape tensors (esp-dl `Add` requirement) |
+| `Mul` | constant (`Mul(constant=c)`), skip connection (`Mul(input_index=i)`), or binary (`Mul()(x, y)`); same-shape tensors (esp-dl `Mul` requirement, verified on-device) |
 | `Mean` / `Flatten` | global average pool / row-major flatten |
 
 Violations fail fast at construction time (`ValueError`), not on the board.
@@ -171,8 +172,9 @@ void loop() { delay(5000); }
 
 ## Model zoo
 
-Prebuilt architectures (`espdlx/zoo.py`, all residual-free variants — no runtime
-tensor `Add` on-device, so skip connections are omitted):
+Prebuilt architectures (`espdlx/zoo.py`). The zoo keeps residual-free variants
+for minimum latency, but the framework supports skip connections via
+`Add(input_index=i)` (verified against the espdlx Arduino runtime's `dl::Add`):
 
 ```python
 from espdlx.zoo import MobileNetV2, MobileNetV1, VGG, DSCNN

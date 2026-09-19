@@ -80,6 +80,42 @@ def test_export_onnx_espdlx_model(tmp_path):
 
 
 @requires_onnx
+def test_export_onnx_residual_model_has_add_node(tmp_path):
+    model = espdlx.Model(
+        [
+            L.Conv2d(2, 2, 1),
+            L.ReLU(),
+            L.Conv2d(2, 2, 1),
+            L.Add(input_index=0),
+        ],
+        name="residual",
+    )
+    model.eval()
+    path = export_onnx(model, torch.zeros(1, 2, 4, 4), tmp_path / "res.onnx")
+    m = _onnx.load(str(path))
+    _onnx.checker.check_model(m)
+    assert "Add" in {n.op_type for n in m.graph.node}
+
+
+@requires_onnx
+def test_export_onnx_mul_model_has_mul_node(tmp_path):
+    model = espdlx.Model(
+        [
+            L.Conv2d(2, 2, 1),
+            L.ReLU(),
+            L.Mul(input_index=0),
+            L.Mul(constant=0.5),
+        ],
+        name="mul",
+    )
+    model.eval()
+    path = export_onnx(model, torch.zeros(1, 2, 4, 4), tmp_path / "m.onnx")
+    m = _onnx.load(str(path))
+    _onnx.checker.check_model(m)
+    assert "Mul" in {n.op_type for n in m.graph.node}
+
+
+@requires_onnx
 def test_convert_end_to_end_with_stub_quantizer(tmp_path, monkeypatch):
     ppq_api = pytest.importorskip("esp_ppq.api")
 
