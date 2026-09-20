@@ -567,3 +567,66 @@ def test_convert_end_to_end_tier3_with_stub_quantizer(tmp_path, monkeypatch):
     assert report["name"] == "tier3"
     assert Path(report["espdl_path"]).read_bytes() == b"tier3-espdl"
     assert report["input_shape"] == [1, 4, 8]
+
+
+def test_write_header_with_metadata_emits_quant_recipe(tmp_path):
+    from espdlx.convert import write_header
+
+    path = write_header(
+        bytes(range(16)),
+        tmp_path / "m.h",
+        "my_classifier_espdl",
+        num_classes=3,
+        input_shape=[3, 96, 96],
+        input_scale=0.023529412,
+        input_zero_point=0,
+    )
+    text = path.read_text()
+    assert "static const int NUM_CLASSES = 3;" in text
+    assert "static const int INPUT_SHAPE[] = {3, 96, 96};" in text
+    assert "static const float INPUT_SCALE = 0.023529412f;" in text
+    assert "static const int INPUT_ZERO_POINT = 0;" in text
+    assert "static inline int8_t quantize(float v)" in text
+    assert "static inline float dequantize(int8_t q)" in text
+    assert text.count("0x") == 16  # metadata adds no hex-looking text
+
+
+def test_write_header_without_metadata_stays_bare(tmp_path):
+    from espdlx.convert import write_header
+
+    text = (write_header(bytes(range(8)), tmp_path / "m.h", "m_espdl")).read_text()
+    assert "num_classes" not in text
+    assert "quantize" not in text
+
+
+def test_infer_num_classes_from_2d_head():
+    from espdlx.convert import _infer_num_classes
+
+    torch.manual_seed(0)
+    assert _infer_num_classes(_tiny_model(), torch.zeros(1, 1, 4, 4)) == 8
+    spatial = espdlx.Model([L.Conv2d(1, 4, 1)], name="spatial")
+    assert _infer_num_classes(spatial, torch.zeros(1, 1, 4, 4)) is None
+
+
+def test_convert_report_and_header_carry_num_classes(tmp_path, monkeypatch):
+    ppq_api = pytest.importorskip("esp_ppq.api")
+
+    def stub_quantize(*, onnx_import_file, espdl_export_file, **kwargs):
+        Path(espdl_export_file).write_bytes(b"cls-espdl")
+        return SimpleNamespace(inputs={})
+
+    monkeypatch.setattr(ppq_api, "espdl_quantize_onnx", stub_quantize)
+
+    model = _tiny_model()  # head Linear(64, 8) -> (N, 8)
+    calib = DataLoader(TensorDataset(torch.zeros(4, 1, 4, 4)), batch_size=2)
+    report = convert(
+        model=model,
+        example_input=torch.zeros(1, 1, 4, 4),
+        calib_loader=calib,
+        out_dir=tmp_path / "deploy_cls",
+    )
+    assert report["num_classes"] == 8
+    assert report["input_shape"] == [1, 1, 4, 4]  # full shape incl. batch
+    header = Path(report["header_path"]).read_text()
+    assert "static const int NUM_CLASSES = 8;" in header
+    assert "static const int INPUT_SHAPE[] = {1, 4, 4};" in header  # no batch dim

@@ -145,6 +145,60 @@ class MobileNetV2:
         model.validate_shapes((1, in_channels, img_size, img_size))
         return model
 
+    @staticmethod
+    def FomoSlim(
+        img_size: int = 160,
+        in_channels: int = 1,
+        head_stride: int = 4,
+        head_channels: int = 2,
+        width: float = 1.0,
+        name: str = "fomo_slim",
+    ) -> espdlx.Model:
+        """FOMO detector with a top-down neck (see docs/DETECTION_ROADMAP.md, Phase B).
+
+        Backbone: stem s2 -> DS s2 (shallow tap) -> DS s2 -> DS s1 (deep).
+        Neck: `Resize` x2 (sanctioned decoder path) -> 1x1 align ->
+        `Concat[tap, up]` -> 3x3 fuse. All fusion collapses into ONE head at
+        `img_size / head_stride` (single-output `Model`, so the neck must end
+        at exactly one resolution — `head_stride=4` = fine grid, `8` = coarse).
+
+        Output: `(N, head_channels, G, G)` logits, softmax at decode
+        (never in the model). Single-class detector uses 2; multi-class uses
+        C+1 with the `espdlx.fomo` helpers.
+
+        `width` scales all channel counts (16/24/40 backbone, 24 align, 32
+        fuse): 1.0 = ~27 MMACs at 160px grid 40 (~20k params), 1.5 = ~60
+        MMACs, 2.0 = ~105 MMACs.
+        """
+        if img_size % 8 != 0:
+            raise ValueError(f"FomoSlim: img_size must be a multiple of 8, got {img_size}")
+        if head_stride not in (4, 8):
+            raise ValueError(f"FomoSlim: head_stride must be 4 or 8, got {head_stride}")
+        if width <= 0:
+            raise ValueError(f"FomoSlim: width must be > 0, got {width}")
+
+        def ch(n: int) -> int:
+            return max(int(round(n * width / 8)) * 8, 8)
+
+        c_stem, c_tap, c_deep, c_fuse = ch(16), ch(24), ch(40), ch(32)
+        layers: list = [L.Conv2d(in_channels, c_stem, 3, stride=2, padding=1),
+                        L.BatchNorm2d(c_stem), L.ReLU6()]
+        layers += _ds(c_stem, c_tap, s=2)               # tap S @ img/4
+        tap_s = len(layers) - 1
+        layers += _ds(c_tap, c_deep, s=2)               # img/8
+        layers += _ds(c_deep, c_deep, s=1)              # deep
+        layers += [L.Resize(scale_factor=2, mode="nearest")]
+        layers += [L.Conv2d(c_deep, c_tap, 1), L.BatchNorm2d(c_tap), L.ReLU6()]  # align
+        up = len(layers) - 1
+        layers += [L.Concat(input_indices=[tap_s, up], dim=1)]  # 2*c_tap @ img/4
+        layers += _cbr(2 * c_tap, c_fuse)               # fuse
+        if head_stride == 8:
+            layers += _cbr(c_fuse, c_fuse, s=2)
+        layers += [L.Conv2d(c_fuse, head_channels, 1)]
+        model = espdlx.Model(layers, name=name)
+        model.validate_shapes((1, in_channels, img_size, img_size))
+        return model
+
 
 class MobileNetV1:
     """Depthwise-separable family (`DW3x3 + 1x1`, `BN + ReLU`)."""
