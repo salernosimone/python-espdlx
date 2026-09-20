@@ -582,12 +582,40 @@ def _sanitize_identifier(name: str) -> str:
     return cleaned
 
 
+def _infer_num_classes(model: Any, example_input: Any) -> int | None:
+    """Best-effort class count: forward ``example_input``, read ``(N, C)``.
+
+    Returns the width of a 2-D classifier output, else ``None`` (e.g.
+    spatial/detection heads or a forward pass that fails on this host).
+    Never raises — callers treat ``None`` as “unknown, omit the define”.
+    """
+    try:
+        import torch
+
+        if not isinstance(example_input, torch.Tensor):
+            return None
+        model.eval()
+        with torch.no_grad():
+            out = model(example_input)
+        if isinstance(out, (list, tuple)):
+            return None
+        if getattr(out, "dim", lambda: -1)() == 2:
+            return int(out.shape[1])
+        return None
+    except Exception:
+        return None
+
+
 def write_header(
     espdl_bytes: bytes,
     header_path: str | Path,
     var_name: str,
     *,
     bytes_per_line: int = 16,
+    num_classes: int | None = None,
+    input_shape: list[int] | tuple[int, ...] | None = None,
+    input_scale: float | None = None,
+    input_zero_point: int | None = None,
 ) -> Path:
     """Write ``espdl_bytes`` as a C array header for Arduino sketches.
 
@@ -595,6 +623,14 @@ def write_header(
     sit next to a ``.ino`` file with no extra tooling::
 
         #include "my_model.h"  // const unsigned char my_model_espdl[N] = {...};
+
+    Metadata travels with the bytes (zero effort on the board side):
+    ``NUM_CLASSES``, ``INPUT_SHAPE``, ``INPUT_SCALE`` /
+    ``INPUT_ZERO_POINT`` and the ``quantize()`` / ``dequantize()`` int8
+    helpers. ``INPUT_SHAPE`` is the per-sample shape (no batch dim).
+    Each item is emitted only when its value is known (``None`` = omit);
+    a plain call with no metadata produces exactly the bare model array
+    as before.
 
     Returns the resolved ``header_path``.
     """
@@ -615,6 +651,35 @@ def write_header(
         f"const unsigned int {var_name}_len = {len(espdl_bytes)};",
         "",
     ]
+    meta: list[str] = []
+    if num_classes is not None:
+        meta.append(f"static const int NUM_CLASSES = {int(num_classes)};")
+    if input_shape is not None:
+        shape = ", ".join(str(int(d)) for d in input_shape)
+        meta.append(f"static const int INPUT_SHAPE[] = {{{shape}}};")
+    has_quant = input_scale is not None
+    if has_quant:
+        zp = 0 if input_zero_point is None else int(input_zero_point)
+        meta.append(f"static const float INPUT_SCALE = {float(input_scale):.9g}f;")
+        meta.append(f"static const int INPUT_ZERO_POINT = {zp};")
+    if meta:
+        lines += ["// Model metadata + int8 helpers: just include, nothing to copy.", *meta, ""]
+    if has_quant:
+        lines += [
+            "#include <math.h>",
+            "",
+            "static inline int8_t quantize(float v) {",
+            "  int q = (int)roundf(v / INPUT_SCALE) + INPUT_ZERO_POINT;",
+            "  if (q > 127) q = 127;",
+            "  if (q < -128) q = -128;",
+            "  return (int8_t)q;",
+            "}",
+            "",
+            "static inline float dequantize(int8_t q) {",
+            "  return ((int)q - INPUT_ZERO_POINT) * INPUT_SCALE;",
+            "}",
+            "",
+        ]
     header_path.write_text("\n".join(lines))
     return header_path
 
@@ -627,6 +692,7 @@ def convert(
     *,
     name: str | None = None,
     input_shape: list[int] | tuple[int, ...] | None = None,
+    num_classes: int | None = None,
     input_name: str = "input",
     output_name: str = "output",
     opset: int = DEFAULT_OPSET,
@@ -647,6 +713,10 @@ def convert(
       ``espdl_report.json``.
     - ``name``: file/symbol stem; defaults to ``model.name`` for
       :class:`espdlx.Model`, else ``"model"``.
+    - ``num_classes``: class count written into the header as
+      ``NUM_CLASSES``. When omitted it is inferred from a forward
+      pass over ``example_input`` (``(N, C)`` outputs); spatial heads stay
+      ``None`` and omit the define.
     """
     onnx = _require_onnx()
     out_dir = Path(out_dir)
@@ -688,8 +758,20 @@ def convert(
         verbose=verbose,
     )
     espdl_bytes = espdl_path.read_bytes()
-    write_header(espdl_bytes, header_path, var_name)
     scale, zero_point = _input_quant_params(graph, input_name)
+    if num_classes is None:
+        num_classes = _infer_num_classes(model, example_input)
+    # Header describes one sample: drop the leading batch dim.
+    header_shape = list(input_shape)[1:] if len(list(input_shape)) > 1 else list(input_shape)
+    write_header(
+        espdl_bytes,
+        header_path,
+        var_name,
+        num_classes=num_classes,
+        input_shape=header_shape,
+        input_scale=scale,
+        input_zero_point=zero_point,
+    )
     report = {
         "name": stem,
         "out_dir": str(out_dir),
@@ -704,6 +786,7 @@ def convert(
         "calib_steps": calib_steps,
         "input_name": input_name,
         "input_shape": list(input_shape),
+        "num_classes": num_classes,
         "input_scale": scale,
         "input_zero_point": zero_point,
     }

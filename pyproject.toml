@@ -1,6 +1,6 @@
 [project]
 name = "espdlx"
-version = "0.1.0"
+version = "0.2.0"
 description = "Train models in PyTorch and export them to .espdl (native format for ESP32 boards). Deploy via ONNX -> esp-dl."
 readme = "README.md"
 requires-python = ">=3.12"

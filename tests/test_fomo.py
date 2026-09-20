@@ -1,5 +1,6 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
 from espdlx.fomo import (
     decode,
@@ -126,3 +127,95 @@ def test_decode_peaks_merges_bump():
     dets = decode_peaks(l, thresh=0.5)[0]
     assert [(c, r) for c, r, _ in dets] == [(6, 6)]  # one centroid, not three
     assert len(decode(l, thresh=0.5)[0]) == 3  # plain decode keeps all
+
+
+def test_fomoslim_neck_shapes():
+    """Arch B: top-down neck (Resize -> 1x1 -> Concat[tap, up]) + fine head."""
+    torch.manual_seed(3)
+    model = MobileNetV2.FomoSlim(img_size=160, head_stride=4)
+    out = model(torch.randn(2, 1, 160, 160))
+    assert out.shape == (2, 2, 40, 40)
+    coarse = MobileNetV2.FomoSlim(img_size=160, head_stride=8)
+    assert coarse(torch.randn(1, 1, 160, 160)).shape == (1, 2, 20, 20)
+    assert MobileNetV2.FomoSlim(img_size=96, head_stride=4)(
+        torch.randn(1, 1, 96, 96)).shape == (1, 2, 24, 24)
+
+
+def test_fomoslim_learns_centroids():
+    """Tiny overfit: the necked arch must drive weighted CE down (gradient
+    flows through both Concat inputs — tap and top-down path)."""
+    G, S = 40, 160
+    torch.manual_seed(4)
+    model = MobileNetV2.FomoSlim(img_size=S, head_stride=4)
+    boxes = [(0.3, 0.3, 0.1, 0.1), (0.7, 0.6, 0.1, 0.1)]
+    tgt = torch.stack([encode_centroids(boxes, G)] * 3)
+    heat = torch.stack([encode_heatmap(boxes, G)] * 3)
+    x = torch.randn(3, 1, S, S)
+    opt = torch.optim.Adam(model.parameters(), lr=3e-3)
+    l0 = soft_loss(model(x), tgt, heat, object_weight=25.0).item()
+    for _ in range(40):
+        opt.zero_grad()
+        loss = soft_loss(model(x), tgt, heat, object_weight=25.0)
+        loss.backward()
+        opt.step()
+    assert soft_loss(model(x), tgt, heat, object_weight=25.0).item() < 0.2 * l0
+    dets = decode_peaks(model(x[:1]), thresh=0.5)[0]
+    assert len(dets) == 2  # both memorized centroids, peak-NMS deduped
+
+
+def test_fomo_multiclass_roundtrip():
+    """C+1 helpers: per-class centroids, class-aware decode."""
+    boxes = [(0.2, 0.3, 0.1, 0.1, 2), (0.7, 0.8, 0.1, 0.1, 1)]
+    tgt = encode_centroids(boxes, 12)
+    assert tgt[3, 2].item() == 2 and tgt[9, 8].item() == 1
+    heat = encode_heatmap(boxes, 12)
+    logits = torch.randn(2, 3, 12, 12, requires_grad=True)
+    loss = soft_loss(logits, tgt[None].expand(2, -1, -1),
+                     heat[None].expand(2, -1, -1))
+    loss.backward()
+    assert torch.isfinite(loss) and logits.grad is not None
+    hot = torch.full((1, 3, 12, 12), -10.0)
+    hot[0, 2, 5, 5] = 10.0
+    assert decode_peaks(hot)[0] == [(5, 5, hot.softmax(1)[0, 2, 5, 5].item(), 1)]
+    # 2-channel decode_peaks unchanged
+    l2 = torch.full((1, 2, 12, 12), -5.0)
+    l2[0, 1, 6, 6] = 10.0
+    assert decode_peaks(l2)[0] == [(6, 6, decode_peaks(l2)[0][0][2])]
+
+
+def test_heatmap_loss_regresses_bump():
+    """CenterNet-style: peak must land ON the encoded centroid, not drift."""
+    torch.manual_seed(5)
+    from espdlx.fomo import heatmap_loss
+    boxes = [(0.3, 0.3, 0.1, 0.1), (0.7, 0.6, 0.1, 0.1)]
+    heat = torch.stack([encode_heatmap(boxes, 40)] * 3)
+    model_logits = torch.full((3, 2, 40, 40), 0.0)
+    logits = torch.zeros(3, 2, 40, 40)
+    logits[:, 1, 12, 14] = 8.0   # bumped right of true cell (12,12)
+    logits[:, 1, 24, 26] = 8.0   # bumped off (24,28)
+    logits[:, 0] = -2.0
+    l0 = heatmap_loss(logits, heat).item()
+    assert l0 == l0  # finite
+    # moving the bump ONTO the true cells strictly lowers the loss
+    fixed = torch.zeros(3, 2, 40, 40)
+    fixed[:, 1, 12, 12] = 8.0
+    fixed[:, 1, 24, 28] = 8.0
+    fixed[:, 0] = -2.0
+    assert heatmap_loss(fixed, heat).item() < l0
+    # optimization probe: a conv head learns to place the peak on-target
+    conv = torch.nn.Conv2d(3, 2, 3, padding=1)
+    x = torch.randn(2, 3, 40, 40)
+    tgt = torch.stack([heat[0], heat[1]])  # one bump-set per sample
+    x[:, 2] = tgt                          # the signal the head must read
+    opt = torch.optim.Adam(conv.parameters(), lr=1e-2)
+    l_start = heatmap_loss(conv(x), tgt, object_weight=1.0).item()
+    for _ in range(300):
+        opt.zero_grad()
+        heatmap_loss(conv(x), tgt, object_weight=1.0).backward()
+        opt.step()
+    l = heatmap_loss(conv(x), tgt, object_weight=1.0).item()
+    assert l < 0.5 * l_start  # clear descent
+    prob = conv(x).softmax(1)[:, 1]
+    for (bi, bj) in ((12, 12), (24, 28)):
+        assert prob[0, bi, bj] > 0.4, \
+            f"peak missing at encoded cell {(bi, bj)} after training"
